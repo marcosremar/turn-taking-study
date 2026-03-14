@@ -7,8 +7,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     git ffmpeg libsndfile1 curl && \
     rm -rf /var/lib/apt/lists/*
 
+# Clone benchmark repo
+RUN git clone https://github.com/marcosremar/turn-taking-study.git /workspace/turn-taking-study
+
 # Python deps
-COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Clone VAP repo
@@ -19,7 +21,7 @@ RUN git clone https://github.com/ErikEkstedt/VoiceActivityProjection.git /worksp
 RUN git clone https://github.com/ErikEkstedt/vap_dataset.git /workspace/vap_dataset && \
     cd /workspace/vap_dataset && pip install -e .
 
-# Copy benchmark scripts
+# Copy any local overrides (optional, for dev)
 COPY . .
 
 # Download models on build (cache in image)
