@@ -119,14 +119,14 @@ class AudioSample:
 
 
 # ---------------------------------------------------------------------------
-# Label assignment — punctuation-based
+# Label assignment — hybrid: punctuation + audio-based
 # ---------------------------------------------------------------------------
 
 def classify_text_completeness(text: str) -> float | None:
     """Classify if text represents a complete or incomplete utterance.
 
     Returns:
-        1.0 for complete, 0.0 for incomplete, None if ambiguous
+        1.0 for complete, 0.0 for incomplete, None if can't determine from text
     """
     text = text.strip()
     if not text or len(text) < 3:
@@ -140,15 +140,9 @@ def classify_text_completeness(text: str) -> float | None:
     if INCOMPLETE_ENDINGS.search(text):
         return 0.0
 
-    # No punctuation — use heuristics based on text length and content
-    words = text.split()
-    if len(words) <= 2:
-        # Very short utterances without punctuation are ambiguous
-        return None
-
-    # Longer text without ending punctuation is likely incomplete
-    # (the transcriber would have added a period if it was complete)
-    return 0.0
+    # No punctuation — can't determine from text alone
+    # Return None so the caller uses audio-based labeling instead
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -158,7 +152,10 @@ def classify_text_completeness(text: str) -> float | None:
 def load_coraa_samples(max_samples: int = 50000) -> list[AudioSample]:
     """Load CORAA v1.1 — conversational Brazilian Portuguese (291h).
 
-    Uses text transcription to determine complete/incomplete labels.
+    Hybrid labeling:
+    - If text has punctuation (.!?), use that for labels
+    - Otherwise: full audio = COMPLETE (natural prosodic ending),
+      truncated audio at 30-75% = INCOMPLETE (mid-utterance cut)
     """
     from datasets import load_dataset
 
@@ -177,7 +174,8 @@ def load_coraa_samples(max_samples: int = 50000) -> list[AudioSample]:
     samples = []
     complete_count = 0
     incomplete_count = 0
-    skipped = 0
+    text_labeled = 0
+    audio_labeled = 0
     target_per_class = max_samples // 2
 
     for i, row in enumerate(ds):
@@ -192,7 +190,6 @@ def load_coraa_samples(max_samples: int = 50000) -> list[AudioSample]:
             audio = np.array(audio_data["array"], dtype=np.float32)
             sr = audio_data["sampling_rate"]
 
-            # Resample to 16kHz if needed
             if sr != SAMPLE_RATE:
                 import torchaudio
                 tensor = torch.from_numpy(audio).float().unsqueeze(0)
@@ -202,33 +199,54 @@ def load_coraa_samples(max_samples: int = 50000) -> list[AudioSample]:
             if duration < 1.0:
                 continue
 
-            # Get text and classify completeness
             text = str(row.get("text", row.get("sentence", "")))
-            label = classify_text_completeness(text)
-            if label is None:
-                skipped += 1
-                continue
-
-            # Check if we still need this class
-            if label == 1.0 and complete_count >= target_per_class:
-                continue
-            if label == 0.0 and incomplete_count >= target_per_class:
-                continue
-
             speaker_id = str(row.get("speaker", row.get("speaker_id", f"coraa_{i}")))
+            text_label = classify_text_completeness(text)
 
-            # Extract 8-second window from end of audio
-            window = _extract_window(audio, position="end")
-            if window is not None:
-                samples.append(AudioSample(
-                    audio=window, label=label,
-                    speaker_id=speaker_id, source="coraa",
-                    text=text,
-                ))
-                if label == 1.0:
-                    complete_count += 1
-                else:
-                    incomplete_count += 1
+            if text_label is not None:
+                # Text has punctuation — use it directly
+                if text_label == 1.0 and complete_count >= target_per_class:
+                    continue
+                if text_label == 0.0 and incomplete_count >= target_per_class:
+                    continue
+
+                window = _extract_window(audio, position="end")
+                if window is not None:
+                    samples.append(AudioSample(
+                        audio=window, label=text_label,
+                        speaker_id=speaker_id, source="coraa", text=text,
+                    ))
+                    if text_label == 1.0:
+                        complete_count += 1
+                    else:
+                        incomplete_count += 1
+                    text_labeled += 1
+            else:
+                # No punctuation — use audio-based labeling:
+                # COMPLETE: full utterance (speaker naturally finished)
+                if complete_count < target_per_class:
+                    window = _extract_window(audio, position="end")
+                    if window is not None:
+                        samples.append(AudioSample(
+                            audio=window, label=1.0,
+                            speaker_id=speaker_id, source="coraa", text=text,
+                        ))
+                        complete_count += 1
+                        audio_labeled += 1
+
+                # INCOMPLETE: truncate at 30-75% (mid-utterance cut)
+                if incomplete_count < target_per_class and duration >= 2.0:
+                    cut_frac = random.uniform(0.3, 0.75)
+                    cut_sample = int(len(audio) * cut_frac)
+                    truncated = audio[:cut_sample]
+                    window = _extract_window(truncated, position="end")
+                    if window is not None:
+                        samples.append(AudioSample(
+                            audio=window, label=0.0,
+                            speaker_id=speaker_id, source="coraa", text=text,
+                        ))
+                        incomplete_count += 1
+                        audio_labeled += 1
 
         except Exception as e:
             if i < 5:
@@ -236,18 +254,23 @@ def load_coraa_samples(max_samples: int = 50000) -> list[AudioSample]:
             continue
 
         if i % 5000 == 0 and i > 0:
-            log.info("  CORAA: processed %d rows, %d complete, %d incomplete, %d skipped",
-                     i, complete_count, incomplete_count, skipped)
+            log.info("  CORAA: processed %d rows, %d complete, %d incomplete (text=%d, audio=%d)",
+                     i, complete_count, incomplete_count, text_labeled, audio_labeled)
 
-    log.info("CORAA: %d complete + %d incomplete = %d samples (%d skipped as ambiguous)",
-             complete_count, incomplete_count, len(samples), skipped)
+    log.info("CORAA: %d complete + %d incomplete = %d samples (text_labeled=%d, audio_labeled=%d)",
+             complete_count, incomplete_count, len(samples), text_labeled, audio_labeled)
     return samples
 
 
 def load_mupe_samples(max_samples: int = 50000) -> list[AudioSample]:
     """Load CORAA-MUPE-ASR — interview turn-taking (365h).
 
-    Uses text transcription for labels. Fixed speaker_id to use unique hashes.
+    Hybrid labeling (same as CORAA):
+    - If text has punctuation (.!?), use that for labels
+    - Otherwise: full audio = COMPLETE (natural prosodic ending),
+      truncated audio at 30-75% = INCOMPLETE (mid-utterance cut)
+
+    Fixed speaker_id to use unique hashes (not just "interviewer"/"interviewee").
     """
     from datasets import load_dataset
 
@@ -266,7 +289,8 @@ def load_mupe_samples(max_samples: int = 50000) -> list[AudioSample]:
     samples = []
     complete_count = 0
     incomplete_count = 0
-    skipped = 0
+    text_labeled = 0
+    audio_labeled = 0
     target_per_class = max_samples // 2
 
     for i, row in enumerate(ds):
@@ -290,39 +314,63 @@ def load_mupe_samples(max_samples: int = 50000) -> list[AudioSample]:
             if duration < 1.0:
                 continue
 
-            # Get text and classify
             text = str(row.get("text", row.get("sentence", "")))
-            label = classify_text_completeness(text)
-            if label is None:
-                skipped += 1
-                continue
-
-            if label == 1.0 and complete_count >= target_per_class:
-                continue
-            if label == 0.0 and incomplete_count >= target_per_class:
-                continue
 
             # Fix: use a unique speaker_id based on audio_path or index,
             # NOT speaker_type which is just "interviewer"/"interviewee"
             audio_path = str(row.get("audio_path", row.get("path", "")))
             if audio_path:
-                # Extract speaker info from path (e.g., "speaker_001/audio.wav")
                 parts = audio_path.split("/")
                 speaker_id = f"mupe_{parts[0] if len(parts) > 1 else hashlib.md5(audio_path.encode()).hexdigest()[:8]}"
             else:
-                speaker_id = f"mupe_{i // 50}"  # Group every 50 samples as one "speaker"
+                speaker_id = f"mupe_{i // 50}"
 
-            window = _extract_window(audio, position="end")
-            if window is not None:
-                samples.append(AudioSample(
-                    audio=window, label=label,
-                    speaker_id=speaker_id, source="mupe",
-                    text=text,
-                ))
-                if label == 1.0:
-                    complete_count += 1
-                else:
-                    incomplete_count += 1
+            text_label = classify_text_completeness(text)
+
+            if text_label is not None:
+                # Text has punctuation — use it directly
+                if text_label == 1.0 and complete_count >= target_per_class:
+                    continue
+                if text_label == 0.0 and incomplete_count >= target_per_class:
+                    continue
+
+                window = _extract_window(audio, position="end")
+                if window is not None:
+                    samples.append(AudioSample(
+                        audio=window, label=text_label,
+                        speaker_id=speaker_id, source="mupe", text=text,
+                    ))
+                    if text_label == 1.0:
+                        complete_count += 1
+                    else:
+                        incomplete_count += 1
+                    text_labeled += 1
+            else:
+                # No punctuation — use audio-based labeling:
+                # COMPLETE: full utterance (speaker naturally finished)
+                if complete_count < target_per_class:
+                    window = _extract_window(audio, position="end")
+                    if window is not None:
+                        samples.append(AudioSample(
+                            audio=window, label=1.0,
+                            speaker_id=speaker_id, source="mupe", text=text,
+                        ))
+                        complete_count += 1
+                        audio_labeled += 1
+
+                # INCOMPLETE: truncate at 30-75% (mid-utterance cut)
+                if incomplete_count < target_per_class and duration >= 2.0:
+                    cut_frac = random.uniform(0.3, 0.75)
+                    cut_sample = int(len(audio) * cut_frac)
+                    truncated = audio[:cut_sample]
+                    window = _extract_window(truncated, position="end")
+                    if window is not None:
+                        samples.append(AudioSample(
+                            audio=window, label=0.0,
+                            speaker_id=speaker_id, source="mupe", text=text,
+                        ))
+                        incomplete_count += 1
+                        audio_labeled += 1
 
         except Exception as e:
             if i < 5:
@@ -330,11 +378,11 @@ def load_mupe_samples(max_samples: int = 50000) -> list[AudioSample]:
             continue
 
         if i % 5000 == 0 and i > 0:
-            log.info("  MUPE: processed %d rows, %d complete, %d incomplete, %d skipped",
-                     i, complete_count, incomplete_count, skipped)
+            log.info("  MUPE: processed %d rows, %d complete, %d incomplete (text=%d, audio=%d)",
+                     i, complete_count, incomplete_count, text_labeled, audio_labeled)
 
-    log.info("MUPE: %d complete + %d incomplete = %d samples (%d skipped)",
-             complete_count, incomplete_count, len(samples), skipped)
+    log.info("MUPE: %d complete + %d incomplete = %d samples (text_labeled=%d, audio_labeled=%d)",
+             complete_count, incomplete_count, len(samples), text_labeled, audio_labeled)
     return samples
 
 
