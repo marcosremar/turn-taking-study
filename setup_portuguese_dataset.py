@@ -159,8 +159,13 @@ def generate_portuguese_synthetic(
         t = 0.0
         speakers = ["A", "B"]
 
+        hold_prob = 0.25  # 25% chance same speaker continues (hold)
+        prev_speaker = None
         for j in range(n_turns):
-            speaker = speakers[j % 2]
+            if prev_speaker is None or rng.random() >= hold_prob:
+                speaker = speakers[j % 2]  # Normal alternation
+            else:
+                speaker = prev_speaker  # Same speaker continues (hold)
 
             # Turn duration with Portuguese distribution
             duration = max(0.4, rng.normal(turn_duration_mean, turn_duration_std))
@@ -184,6 +189,7 @@ def generate_portuguese_synthetic(
                 end=round(end, 3),
                 text=text,
             ))
+            prev_speaker = speaker
             t = end
 
         total_duration = turns[-1].end
