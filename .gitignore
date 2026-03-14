@@ -1,6 +1,4 @@
 data/
-results/
-report/
 checkpoints/
 __pycache__/
 *.pyc

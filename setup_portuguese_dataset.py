@@ -188,13 +188,14 @@ def generate_portuguese_synthetic(
 
         total_duration = turns[-1].end
 
-        # Generate audio with speaker-distinctive characteristics
+        # Generate stereo speech-like audio (ch0=speaker A, ch1=speaker B)
+        # Uses filtered noise + harmonics to simulate speech formants
         n_samples = int(total_duration * sample_rate)
-        audio = np.zeros(n_samples, dtype=np.float32)
+        audio_a = np.zeros(n_samples, dtype=np.float32)
+        audio_b = np.zeros(n_samples, dtype=np.float32)
 
         for turn in turns:
-            # Speaker A: lower formant, Speaker B: higher formant
-            f0 = 150.0 if turn.speaker == "A" else 220.0
+            f0 = 130.0 if turn.speaker == "A" else 200.0
             s = int(turn.start * sample_rate)
             e = min(int(turn.end * sample_rate), n_samples)
             dur = e - s
@@ -202,27 +203,53 @@ def generate_portuguese_synthetic(
                 continue
 
             t_arr = np.arange(dur) / sample_rate
-            # More natural: fundamental + harmonics + noise
-            signal = (
-                0.2 * np.sin(2 * np.pi * f0 * t_arr) +
-                0.1 * np.sin(2 * np.pi * f0 * 2 * t_arr) +
-                0.05 * np.sin(2 * np.pi * f0 * 3 * t_arr)
-            ).astype(np.float32)
 
-            # Apply envelope (attack/release)
+            # Glottal pulse train (harmonics simulate voiced speech)
+            harmonics = np.zeros(dur, dtype=np.float32)
+            for h in range(1, 8):
+                amp = 0.3 / h  # Falling spectral envelope
+                jitter = rng.uniform(0.98, 1.02)  # Pitch jitter
+                harmonics += amp * np.sin(2 * np.pi * f0 * h * jitter * t_arr).astype(np.float32)
+
+            # Aspiration noise (unvoiced component)
+            noise = rng.normal(0, 0.08, dur).astype(np.float32)
+
+            # Formant-like bandpass: weight low freqs more (speech is 300-3000Hz)
+            from scipy.signal import butter, lfilter
+            b_low, a_low = butter(2, [200, 3500], btype='band', fs=sample_rate)
+            noise_filtered = lfilter(b_low, a_low, noise).astype(np.float32)
+
+            signal = harmonics * 0.7 + noise_filtered * 0.3
+
+            # Amplitude modulation (syllable rhythm ~4-5Hz for Portuguese)
+            syllable_rate = rng.uniform(4.0, 5.5)
+            modulation = 0.6 + 0.4 * np.sin(2 * np.pi * syllable_rate * t_arr).astype(np.float32)
+            signal *= modulation
+
+            # Envelope with natural attack/release
             envelope = np.ones(dur, dtype=np.float32)
-            attack = min(int(0.05 * sample_rate), dur // 4)
-            release = min(int(0.08 * sample_rate), dur // 4)
+            attack = min(int(0.03 * sample_rate), dur // 4)
+            release = min(int(0.06 * sample_rate), dur // 4)
             if attack > 0:
-                envelope[:attack] = np.linspace(0, 1, attack)
+                envelope[:attack] = np.linspace(0, 1, attack).astype(np.float32)
             if release > 0:
-                envelope[-release:] = np.linspace(1, 0, release)
+                envelope[-release:] = np.linspace(1, 0, release).astype(np.float32)
 
-            audio[s:e] += signal * envelope
+            target = audio_a if turn.speaker == "A" else audio_b
+            target[s:e] += signal * envelope
 
-        # Add ambient noise
-        audio += rng.normal(0, 0.005, n_samples).astype(np.float32)
-        audio = np.clip(audio, -1.0, 1.0)
+        # Low ambient noise on both channels
+        audio_a += rng.normal(0, 0.003, n_samples).astype(np.float32)
+        audio_b += rng.normal(0, 0.003, n_samples).astype(np.float32)
+        audio_a = np.clip(audio_a, -1.0, 1.0)
+        audio_b = np.clip(audio_b, -1.0, 1.0)
+        # Also save mono mix for models that expect mono
+        audio = (audio_a + audio_b) / 2.0
+
+        # Save stereo (for VAP) and mono (for VAD/silence)
+        stereo = np.stack([audio_a, audio_b], axis=-1)  # (samples, 2)
+        audio_path_stereo = synth_dir / f"pt_synth_{i:04d}_stereo.wav"
+        sf.write(str(audio_path_stereo), stereo, sample_rate)
 
         audio_path = synth_dir / f"pt_synth_{i:04d}.wav"
         sf.write(str(audio_path), audio, sample_rate)

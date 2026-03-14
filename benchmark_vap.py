@@ -103,12 +103,30 @@ class VAPModel(TurnTakingModel):
         if not self._ensure_installed():
             raise RuntimeError("VAP model not available")
 
-        from vap.model import VAPModel as VAPModelClass
+        from vap.model import VapGPT, VapConfig
 
         ckpt = self.checkpoint_path or self._download_checkpoint()
         log.info("Loading VAP model from %s on %s", ckpt, self.device)
 
-        self._model = VAPModelClass.load_from_checkpoint(ckpt, map_location=self.device)
+        state_dict = torch.load(ckpt, map_location=self.device, weights_only=False)
+        if "state_dict" in state_dict:
+            cfg_data = state_dict.get("hyper_parameters", {}).get("conf", {})
+            sd = state_dict["state_dict"]
+        else:
+            cfg_data = {}
+            sd = state_dict
+
+        try:
+            conf = VapConfig()
+            self._model = VapGPT(conf)
+            self._model.load_state_dict(sd, strict=False)
+        except Exception as e:
+            log.warning("Standard load failed (%s), trying alternative", e)
+            from vap.model import load_older_state_dict
+            conf = VapConfig()
+            self._model = VapGPT(conf)
+            load_older_state_dict(self._model, sd)
+
         self._model.eval()
         self._model.to(self.device)
 
@@ -119,11 +137,16 @@ class VAPModel(TurnTakingModel):
 
         self._load_model()
 
-        audio, sr = sf.read(conversation.audio_path)
+        # Prefer stereo file (separate channels per speaker)
+        stereo_path = conversation.audio_path.replace(".wav", "_stereo.wav")
+        import os
+        if os.path.exists(stereo_path):
+            audio, sr = sf.read(stereo_path)
+        else:
+            audio, sr = sf.read(conversation.audio_path)
 
-        # VAP expects stereo (2 channels, one per speaker)
+        # VAP expects (2, samples) — one channel per speaker
         if audio.ndim == 1:
-            # Mono: duplicate to stereo (model will still predict)
             audio = np.stack([audio, audio], axis=0)
         elif audio.ndim == 2:
             if audio.shape[1] == 2:
@@ -160,10 +183,10 @@ class VAPModel(TurnTakingModel):
             with torch.no_grad():
                 output = self._model(chunk)
 
-            # Extract turn-shift probabilities from VAP output
-            # VAP outputs p_now and p_future for each speaker
-            if hasattr(output, "p_now"):
-                p = output.p_now.cpu().numpy().squeeze()
+            # VAP output: dict with 'vad' (B, T, 2) and 'logits' (B, T, 256)
+            # 'vad' contains voice activity probabilities per speaker
+            if isinstance(output, dict) and "vad" in output:
+                p = output["vad"].cpu().numpy().squeeze()  # (T, 2)
             elif isinstance(output, dict) and "p_now" in output:
                 p = output["p_now"].cpu().numpy().squeeze()
             elif isinstance(output, tuple):

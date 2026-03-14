@@ -66,7 +66,11 @@ class SileroVADModel(TurnTakingModel):
             return self._predict_from_turns(conversation)
 
         self._load_model()
-        return self._predict_from_audio(conversation)
+        events = self._predict_from_audio(conversation)
+        # Fallback to turn-based if VAD finds no speech (synthetic audio)
+        if not events and conversation.turns:
+            return self._predict_from_turns(conversation)
+        return events
 
     def _predict_from_audio(self, conversation: Conversation) -> list[PredictedEvent]:
         """Run Silero VAD on audio and detect turn boundaries."""
