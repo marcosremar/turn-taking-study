@@ -191,95 +191,9 @@ def load_coraa_samples(max_samples: int = 30000) -> list[AudioSample]:
 
 
 def load_common_voice_samples(max_samples: int = 20000) -> list[AudioSample]:
-    """Load Common Voice Portuguese — diverse speakers (51h)."""
-    from datasets import load_dataset
-
-    log.info("Loading Common Voice Portuguese from HuggingFace...")
-    try:
-        ds = load_dataset(
-            "fsicoli/common_voice_22_0", "pt",
-            split="train",
-            cache_dir=str(CACHE_DIR),
-            streaming=True,
-            trust_remote_code=True,
-        )
-    except Exception:
-        # Fallback to mozilla-foundation version
-        try:
-            ds = load_dataset(
-                "mozilla-foundation/common_voice_17_0", "pt",
-                split="train",
-                cache_dir=str(CACHE_DIR),
-                streaming=True,
-                trust_remote_code=True,
-            )
-        except Exception as e:
-            log.warning("Failed to load Common Voice: %s", e)
-            return []
-
-    samples = []
-    complete_count = 0
-    incomplete_count = 0
-    target_per_class = max_samples // 2
-
-    for i, row in enumerate(ds):
-        if complete_count >= target_per_class and incomplete_count >= target_per_class:
-            break
-
-        try:
-            audio_data = row.get("audio", {})
-            if not audio_data:
-                continue
-
-            audio = np.array(audio_data["array"], dtype=np.float32)
-            sr = audio_data["sampling_rate"]
-
-            if sr != SAMPLE_RATE:
-                import torchaudio
-                tensor = torch.from_numpy(audio).float().unsqueeze(0)
-                audio = torchaudio.functional.resample(tensor, sr, SAMPLE_RATE).squeeze().numpy()
-
-            duration = len(audio) / SAMPLE_RATE
-            if duration < 1.0:
-                continue
-
-            speaker_id = str(row.get("client_id", f"cv_{i}"))
-
-            # COMPLETE: each CV sample is a full sentence
-            if complete_count < target_per_class:
-                window = _extract_window(audio, position="end")
-                if window is not None:
-                    samples.append(AudioSample(
-                        audio=window, label=1.0,
-                        speaker_id=speaker_id, source="common_voice",
-                    ))
-                    complete_count += 1
-
-            # INCOMPLETE: cut at 30-70% of the sentence
-            if incomplete_count < target_per_class and duration >= 1.5:
-                cut_frac = random.uniform(0.3, 0.7)
-                cut_sample = int(len(audio) * cut_frac)
-                truncated = audio[:cut_sample]
-                window = _extract_window(truncated, position="end")
-                if window is not None:
-                    samples.append(AudioSample(
-                        audio=window, label=0.0,
-                        speaker_id=speaker_id, source="common_voice",
-                    ))
-                    incomplete_count += 1
-
-        except Exception as e:
-            if i < 5:
-                log.warning("CV sample %d error: %s", i, e)
-            continue
-
-        if i % 5000 == 0 and i > 0:
-            log.info("  CV: processed %d rows, %d complete, %d incomplete",
-                     i, complete_count, incomplete_count)
-
-    log.info("Common Voice: %d complete + %d incomplete = %d samples",
-             complete_count, incomplete_count, len(samples))
-    return samples
+    """Load Common Voice Portuguese — skipped (schema issues)."""
+    log.info("Skipping Common Voice (schema compatibility issues)")
+    return []
 
 
 def load_mls_samples(max_samples: int = 20000) -> list[AudioSample]:
@@ -597,7 +511,12 @@ def train(
 ) -> Path:
     """Fine-tune Smart Turn on Portuguese data from HuggingFace."""
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    if torch.cuda.is_available():
+        device = "cuda"
+    elif torch.backends.mps.is_available():
+        device = "mps"
+    else:
+        device = "cpu"
     log.info("Training on device: %s", device)
     if device == "cuda":
         log.info("GPU: %s (%d MB)", torch.cuda.get_device_name(),
@@ -663,17 +582,18 @@ def train(
     weights = [1.0 / n_neg if l == 0.0 else 1.0 / n_pos for l in train_labels]
     sampler = WeightedRandomSampler(weights, len(weights))
 
+    use_pin = device == "cuda"
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, sampler=sampler,
-        num_workers=2, pin_memory=True,
+        num_workers=2 if device == "cuda" else 0, pin_memory=use_pin,
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=0, pin_memory=True,
+        num_workers=0, pin_memory=use_pin,
     )
     test_loader = DataLoader(
         test_ds, batch_size=batch_size, shuffle=False,
-        num_workers=0, pin_memory=True,
+        num_workers=0, pin_memory=use_pin,
     )
 
     # ----- Model -----
@@ -894,6 +814,6 @@ if __name__ == "__main__":
         epochs=20,
         batch_size=32,
         lr=2e-5,
-        max_samples_per_dataset=5000,
+        max_samples_per_dataset=7000,
     )
     log.info("Done! ONNX model: %s", onnx_path)
