@@ -665,15 +665,15 @@ def train(
 
     train_loader = DataLoader(
         train_ds, batch_size=batch_size, sampler=sampler,
-        num_workers=4, pin_memory=True, prefetch_factor=2,
+        num_workers=2, pin_memory=True,
     )
     val_loader = DataLoader(
         val_ds, batch_size=batch_size, shuffle=False,
-        num_workers=2, pin_memory=True,
+        num_workers=0, pin_memory=True,
     )
     test_loader = DataLoader(
         test_ds, batch_size=batch_size, shuffle=False,
-        num_workers=2, pin_memory=True,
+        num_workers=0, pin_memory=True,
     )
 
     # ----- Model -----
@@ -894,6 +894,6 @@ if __name__ == "__main__":
         epochs=20,
         batch_size=32,
         lr=2e-5,
-        max_samples_per_dataset=25000,
+        max_samples_per_dataset=5000,
     )
     log.info("Done! ONNX model: %s", onnx_path)
