@@ -601,7 +601,7 @@ def train(
     log.info("Training on device: %s", device)
     if device == "cuda":
         log.info("GPU: %s (%d MB)", torch.cuda.get_device_name(),
-                 torch.cuda.get_device_properties(0).total_mem // 1024 // 1024)
+                 torch.cuda.get_device_properties(0).total_memory // 1024 // 1024)
 
     # ----- Load datasets -----
     t0 = time.time()
