@@ -890,7 +890,7 @@ if __name__ == "__main__":
         epochs=30,
         batch_size=32,
         lr=3e-5,
-        max_samples_per_dataset=25000,
+        max_samples_per_dataset=15000,
         whisper_model="openai/whisper-base",
     )
     log.info("Done! Model: %s", onnx_path)
