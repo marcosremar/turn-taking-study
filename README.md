@@ -1,4 +1,54 @@
-# Turn-Taking Model Benchmark Study
+# Turn-Taking Model — Deteccao de Fim de Turno para BabelCast
+
+Pesquisa, benchmarks e fine-tuning de modelos de deteccao de fim de turno para traducao simultanea em portugues.
+
+## Estrutura do Repositorio
+
+```
+docs/turn-taking-study/
+  README.md                        # Este documento
+  melhorias_turn_detection.md      # Plano de melhorias + resultados das 3 rodadas
+  RESEARCH_LOG.md                  # Log de pesquisa
+  data/                            # Datasets (NURC-SP, CORAA, TTS) — ~10GB
+  hf_cache/                        # Cache HuggingFace
+
+  previous-experiments/
+    01-benchmarks/                 # Benchmark de 5 modelos em portugues
+      benchmark_*.py               # Scripts de benchmark (Silence, Silero, VAP, Pipecat, LiveKit)
+      setup_*.py                   # Scripts de setup de datasets
+      report/                      # Relatorio gerado (markdown + LaTeX + graficos)
+
+    02-finetune-scratch/           # Fine-tuning do zero (3 rodadas)
+      finetune_smart_turn_v3.py    # Script principal (Whisper Tiny + Focal Loss)
+      modal_finetune.py            # Deploy no Modal
+      results/                     # Rodada 1: Whisper Base + BCE (F1=0.796)
+      results-tiny/                # Rodada 2: Whisper Tiny + BCE (F1=0.788)
+      results-focal/               # Rodada 3: Whisper Tiny + Focal Loss (F1=0.798)
+      checkpoints/                 # Checkpoints v1/v2
+
+  03-finetune-pipecat-pt/          # NOVO: Fine-tune a partir do Pipecat pre-treinado
+    README.md                      # Documentacao completa do experimento
+```
+
+---
+
+## Resumo dos Experimentos
+
+### 01 — Benchmarks (5 modelos em portugues)
+
+Comparacao de modelos existentes em audio portugues real (NURC-SP, 77 min).
+
+### 02 — Fine-tune do zero (3 rodadas)
+
+Treinamos Whisper Tiny encoder + classifier do zero em 15K amostras de portugues (CORAA + MUPE). Melhor resultado: **F1=0.798, precision 83% @threshold=0.65**. Detalhes em `melhorias_turn_detection.md`.
+
+### 03 — Fine-tune a partir do Pipecat (proximo)
+
+Fine-tune do modelo pre-treinado do Pipecat (270K amostras, 23 linguas) especificamente pra portugues + frances falando portugues. Usa LLMs (Claude) pra criar labels de qualidade + TTS pra gerar audio. Detalhes em `03-finetune-pipecat-pt/README.md`.
+
+---
+
+## Resultados dos Benchmarks (Experimento 01)
 
 Comparative evaluation of turn-taking prediction models for real-time conversational AI, with focus on **Portuguese language** performance.
 

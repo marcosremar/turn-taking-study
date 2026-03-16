@@ -5,3 +5,7 @@ __pycache__/
 .deploy_state.json
 benchmark.log
 *.egg-info/
+hf_cache/
+results/
+*.pt
+*.onnx
